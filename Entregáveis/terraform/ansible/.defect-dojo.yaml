@@ -1,0 +1,163 @@
+#- name: Get RDS Defect-Dojo User
+#  become: false
+#  ansible.builtin.shell:
+#    cmd: |
+#      set -o pipefail && \
+#      aws secretsmanager get-secret-value \
+#      --secret-id 'rds-defect-dojo-credentials' \
+#      --query SecretString --output text | jq -r '.username'
+#    executable: '/bin/bash'
+#  changed_when: false
+#  register: rds_defect_dojo_user
+#
+#- name: Get RDS Defect-Dojo Password
+#  become: false
+#  ansible.builtin.shell:
+#    cmd: |
+#      set -o pipefail && \
+#      aws secretsmanager get-secret-value \
+#      --secret-id 'rds-defect-dojo-credentials' \
+#      --query SecretString --output text | jq -r '.password'
+#    executable: '/bin/bash'
+#  changed_when: false
+#  register: rds_defect_dojo_password
+
+#- name: Get Defect-Dojo User
+#  become: false
+#  ansible.builtin.shell:
+#    cmd: |
+#      set -o pipefail && \
+#      aws secretsmanager get-secret-value \
+#      --secret-id 'defect-dojo-admin-credentials' \
+#      --query SecretString --output text | jq -r '.username'
+#    executable: '/bin/bash'
+#  changed_when: false
+#  register: defect_dojo_admin_user
+#
+#- name: Get Defect-Dojo Password
+#  become: false
+#  ansible.builtin.shell:
+#    cmd: |
+#      set -o pipefail && \
+#      aws secretsmanager get-secret-value \
+#      --secret-id 'defect-dojo-admin-credentials' \
+#      --query SecretString --output text | jq -r '.password'
+#    executable: '/bin/bash'
+#  changed_when: false
+#  register: defect_dojo_admin_password
+#
+
+#- name: Create defect-dojo namespace
+#  kubernetes.core.k8s:
+#    definition:
+#      apiVersion: v1
+#      kind: Namespace
+#      metadata:
+#        name: '{{ defect_dojo_namespace }}'
+
+#- name: Create SecretProviderClass for Defect DOJO
+#  kubernetes.core.k8s:
+#    definition:
+#      apiVersion: secrets-store.csi.x-k8s.io/v1
+#      kind: SecretProviderClass
+#      metadata:
+#        name: secret-provider-class-defect-dojo-credentials
+#        namespace: '{{ defect_dojo_namespace }}'
+#      spec:
+#        provider: aws
+#        parameters:
+#          objects: |
+#            - objectName: 'rds-defect-dojo-credentials'
+#              objectType: 'secretsmanager'
+#              jmesPath:
+#                - path: 'password'
+#                  objectAlias: 'rds-defect-dojo-password'
+#        secretObjects:
+#          - secretName: 'defect-dojo-credentials'
+#            type: Opaque
+#            data:
+#              - objectName: 'rds-defect-dojo-password'
+#                key: 'mysql-password'
+#
+#---
+#- name: Add defect DOJO helm repository
+#  kubernetes.core.helm_repository:
+#    name: defectdojo
+#    repo_url: '{{ defect_dojo_helm_repository }}'
+#
+#- name: Create defectdojo database
+#  community.mysql.mysql_db:
+#    check_implicit_admin: true
+#    login_host: '{{ db_host }}'
+#    login_user: '{{ rds_admin_user.stdout }}'
+#    login_password: '{{ rds_admin_password.stdout }}'
+#    name: defectdojo
+#    state: present
+#
+#- name: Create defectdojo user
+#  community.mysql.mysql_user:
+#    login_host: '{{ db_host }}'
+#    login_user: '{{ rds_admin_user.stdout }}'
+#    login_password: '{{ rds_admin_password.stdout }}'
+#    name: '{{ rds_defect_dojo_user.stdout }}'
+#    password: '{{ rds_defect_dojo_password.stdout }}'
+#    host: '{{ item }}'
+#    priv: 'defectdojo.*:ALL'
+#    column_case_sensitive: false
+#    state: present
+#  loop: '{{ cluster_cidrs }}'
+#
+#- name: Install defect DOJO
+#  kubernetes.core.helm:
+#    name: '{{ defect_dojo_release }}'
+#    namespace: '{{ defect_dojo_namespace }}'
+#    chart_ref: 'defectdojo/defectdojo'
+#    chart_version: '{{ defect_dojo_chart_version }}'
+#    create_namespace: true
+#    values:
+#      createSecret: true
+#      createRabbitMqSecret: true
+#      createRedisSecret: true
+#      createMysqlSecret: false
+#      createPostgresqlSecret: false
+#      host: 'defect-dojo.htsuyoshiy.online'
+#      admin:
+#        user: '{{ defect_dojo_admin_user.stdout }}'
+#        password: '{{ defect_dojo_admin_password.stdout }}'
+#        firstName: Henrique
+#        lastName: Yara
+#        mail: henrique.yara@atos.net
+#      database: mysql
+#      mysql:
+#        enabled: false
+#        auth:
+#          username: '{{ rds_defect_dojo_user.stdout }}'
+#          database: defectdojo
+#          existingSecret: defect-dojo-credentials
+#          secretKey: mysql-password
+#        mysqlServer: '{{ db_host }}'
+#      postgresql:
+#        enabled: false
+#      postgresqlha:
+#        enabled: false
+#      rabbitmq:
+#        enabled: true
+#        service:
+#          ports:
+#            amqp: 5672
+#            management: 15672
+#      django:
+#        ingress:
+#          enabled: true
+#          ingressClassName: '{{ aws_lb_ingress_class }}'
+#          activateTLS: false
+#          annotations:
+#            alb.ingress.kubernetes.io/group.name: application
+#            alb.ingress.kubernetes.io/scheme: internet-facing
+#            alb.ingress.kubernetes.io/certificate-arn: '{{ cert_arn }}'
+#            alb.ingress.kubernetes.io/target-type: ip
+#            alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=60
+#            alb.ingress.kubernetes.io/target-group-attributes: >
+#              stickiness.enabled=true,
+#              stickiness.type=lb_cookie,
+#              stickiness.lb_cookie.duration_seconds=86400

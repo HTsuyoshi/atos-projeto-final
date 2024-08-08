@@ -1,0 +1,9 @@
+.infracost
+.vscode
+Entregáveis/*/.terraform
+Entregáveis/*/.terraform.lock.hcl
+Entregáveis/*/terraform.log
+Entregáveis/*/terraform.tfstate
+Entregáveis/*/terraform.tfstate.backup
+Entregáveis/*/kubernetes
+Entregáveis/terraform/venv/
