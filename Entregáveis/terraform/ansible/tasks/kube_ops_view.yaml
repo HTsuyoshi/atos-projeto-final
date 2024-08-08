@@ -1,0 +1,165 @@
+---
+- name: Create kube-ops-view namespace
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: kube-ops-view
+
+- name: Create kube-ops-view Deployment
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        labels:
+          application: kube-ops-view
+          component: frontend
+        name: kube-ops-view
+        namespace: kube-ops-view
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            application: kube-ops-view
+            component: frontend
+        template:
+          metadata:
+            labels:
+              application: kube-ops-view
+              component: frontend
+          spec:
+            serviceAccountName: kube-ops-view
+            containers:
+              - name: service
+                # see https://github.com/hjacobs/kube-ops-view/releases
+                image: hjacobs/kube-ops-view:23.5.0
+                args:
+                ports:
+                  - containerPort: 8080
+                    protocol: TCP
+                readinessProbe:
+                  httpGet:
+                    path: /health
+                    port: 8080
+                  initialDelaySeconds: 5
+                  timeoutSeconds: 1
+                livenessProbe:
+                  httpGet:
+                    path: /health
+                    port: 8080
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 5
+                resources:
+                  limits:
+                    cpu: 200m
+                    memory: 100Mi
+                  requests:
+                    cpu: 50m
+                    memory: 50Mi
+                securityContext:
+                  readOnlyRootFilesystem: true
+                  runAsNonRoot: true
+                  runAsUser: 1000
+
+- name: Create kube-ops-view Service Account
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: kube-ops-view
+        namespace: kube-ops-view
+
+- name: Create kube-ops-view ClusterRole
+  kubernetes.core.k8s:
+    definition:
+      kind: ClusterRole
+      apiVersion: rbac.authorization.k8s.io/v1
+      metadata:
+        name: kube-ops-view
+      rules:
+        - apiGroups: [""]
+          resources: ["nodes", "pods"]
+          verbs:
+            - list
+        - apiGroups: ["metrics.k8s.io"]
+          resources: ["nodes", "pods"]
+          verbs:
+            - get
+            - list
+
+- name: Create kube-ops-view ClusterRoleBinding
+  kubernetes.core.k8s:
+    definition:
+      kind: ClusterRoleBinding
+      apiVersion: rbac.authorization.k8s.io/v1
+      metadata:
+        name: kube-ops-view
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: kube-ops-view
+      subjects:
+        - kind: ServiceAccount
+          name: kube-ops-view
+          namespace: kube-ops-view
+          apiVersion: v1
+
+- name: Create kube-ops-view Service
+  kubernetes.core.k8s:
+    definition:
+      kind: Service
+      metadata:
+        labels:
+          application: kube-ops-view
+          component: frontend
+        name: kube-ops-view
+        namespace: kube-ops-view
+      spec:
+        selector:
+          application: kube-ops-view
+          component: frontend
+        type: ClusterIP
+        ports:
+          - port: 80
+            protocol: TCP
+            targetPort: 8080
+
+- name: Create kube-ops-view Ingress
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: kube-ops-view
+        namespace: kube-ops-view
+        labels:
+          app: kube-ops-view
+        annotations:
+          alb.ingress.kubernetes.io/group.name: application
+          alb.ingress.kubernetes.io/scheme: internet-facing
+          alb.ingress.kubernetes.io/certificate-arn: '{{ cert_arn }}'
+          alb.ingress.kubernetes.io/target-type: ip
+          alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=60
+          alb.ingress.kubernetes.io/target-group-attributes: >
+            stickiness.enabled=true,
+            stickiness.type=lb_cookie,
+            stickiness.lb_cookie.duration_seconds=86400
+          alb.ingress.kubernetes.io/ssl-redirect: '443'
+      spec:
+        rules:
+          - host: kube-ops-view.htsuyoshiy.online
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: kube-ops-view
+                      port:
+                        number: 80
+        ingressClassName: '{{ aws_lb_ingress_class }}'

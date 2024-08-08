@@ -1,0 +1,49 @@
+---
+- name: Add kubecost helm repository
+  kubernetes.core.helm_repository:
+    name: kubecost
+    repo_url: '{{ kubecost_helm_repository }}'
+
+- name: Install kubecost helm chart
+  kubernetes.core.helm:
+    name: '{{ kubecost_release }}'
+    chart_ref: 'kubecost/cost-analyzer'
+    chart_version: '{{ kubecost_chart_version }}'
+    namespace: '{{ kubecost_namespace }}'
+    create_namespace: true
+    values:
+      kubecostToken: 'XXXXXXXXXXXXXXXXXXXXXXX'
+      persistentVolume:
+        size: 32Gi
+        dbSize: 32.0Gi
+        enabled: true
+        storageClass: '{{ ebs_csi_storage_class }}'
+      prometheus:
+        server:
+          persistentVolume:
+            size: 32Gi
+            dbSize: 32.0Gi
+            enabled: true
+            storageClass: '{{ ebs_csi_storage_class }}'
+          global:
+            external_labels:
+              cluster_id: wordpress-eks
+      serviceMonitor:
+        enabled: false
+      ingress:
+        enabled: true
+        className: '{{ aws_lb_ingress_class }}'
+        annotations:
+          alb.ingress.kubernetes.io/group.name: application
+          alb.ingress.kubernetes.io/scheme: internet-facing
+          alb.ingress.kubernetes.io/target-type: ip
+          alb.ingress.kubernetes.io/certificate-arn: '{{ cert_arn }}'
+          alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=60
+          alb.ingress.kubernetes.io/target-group-attributes: >
+            stickiness.enabled=true,
+            stickiness.type=lb_cookie,
+            stickiness.lb_cookie.duration_seconds=86400
+          alb.ingress.kubernetes.io/ssl-redirect: '443'
+        paths: ["/"]
+        pathType: Prefix
+        hosts: ['kubecost.htsuyoshiy.online']

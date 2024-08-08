@@ -1,0 +1,94 @@
+---
+- name: Add Kubernetes dashboard helm repository
+  kubernetes.core.helm_repository:
+    name: kubernetes-dashboard
+    repo_url: '{{ k8s_dashboard_helm_repository }}'
+
+- name: Install kubernetes dashboard helm chart
+  kubernetes.core.helm:
+    name: '{{ k8s_dashboard_release }}'
+    chart_ref: 'kubernetes-dashboard/kubernetes-dashboard'
+    chart_version: '{{ k8s_dashboard_chart_version }}'
+    namespace: '{{ k8s_dashboard_namespace }}'
+    create_namespace: true
+    values:
+      app:
+        ingress:
+          enabled: true
+          hosts: ['kubernetes.htsuyoshiy.online']
+          ingressClassName: '{{ aws_lb_ingress_class }}'
+          useDefaultIngressClass: false
+          useDefaultAnnotations: false
+          pathType: Prefix
+          path: /
+          issuer:
+            name: disabled
+          tls:
+            enabled: true
+            hosts:
+              - kubernetes.htsuyoshiy.online
+          annotations:
+            alb.ingress.kubernetes.io/group.name: application
+            alb.ingress.kubernetes.io/scheme: internet-facing
+            alb.ingress.kubernetes.io/certificate-arn: '{{ cert_arn }}'
+            alb.ingress.kubernetes.io/target-type: ip
+            alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=60
+            alb.ingress.kubernetes.io/target-group-attributes: >
+              stickiness.enabled=true,
+              stickiness.type=lb_cookie,
+              stickiness.lb_cookie.duration_seconds=86400
+            alb.ingress.kubernetes.io/ssl-redirect: '443'
+            alb.ingress.kubernetes.io/backend-protocol: 'HTTPS'
+
+- name: Create kubernetes dashboard user service account
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: '{{ k8s_dashboard_sa }}'
+        namespace: '{{ k8s_dashboard_namespace }}'
+
+- name: Grant view permission for kubernetes dashboard user
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: '{{ k8s_dashboard_sa }}-cluster-rolebinding'
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: view
+      subjects:
+        - kind: ServiceAccount
+          name: '{{ k8s_dashboard_sa }}'
+          namespace: '{{ k8s_dashboard_namespace }}'
+
+- name: Create kubernetes clusterrole to create deployments
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: create-deployments
+      rules:
+        - apiGroups: ["", "apps", "extensions"]
+          resources: ["deployments", "pods"]
+          verbs: ["create", "update", "patch", "delete"]
+
+- name: Grant create deployments permission for kubernetes dashboard user
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: '{{ k8s_dashboard_sa }}-cluster-rolebinding-create-deployment'
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: create-deployments
+      subjects:
+        - kind: ServiceAccount
+          name: '{{ k8s_dashboard_sa }}'
+          namespace: '{{ k8s_dashboard_namespace }}'

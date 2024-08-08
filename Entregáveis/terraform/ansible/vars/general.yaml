@@ -1,0 +1,77 @@
+---
+# Argument set from ansible command
+# - region
+# - cluster_name
+# - db_host
+# - cluster_cidrs
+# - rds_admin_secret_arn
+# - secret_csi_sa
+# - secret_csi_namespace
+# - secret_csi_role_arn
+# - aws_lb_controller_sa
+# - aws_lb_controller_namespace
+# - aws_lb_role_arn
+# - wp_offload_media_sa
+# - wp_offload_media_namespace
+# - wp_offload_media_role_arn
+# - wp_offload_media_bucket
+# - wp_offload_media_cf
+# - vpc_id
+# - cert_arn
+
+db: 'wordpress'
+db_port: 3306
+
+ebs_csi_storage_class: 'ebs-sc'
+efs_csi_storage_class: 'efs-sc'
+
+stormforge_release: 'stormforge-release'
+stormforge_namespace: 'stormforge'
+stormforge_chart_version: '2.13.1'
+
+metrics_server_release: 'metrics-server'
+metrics_server_namespace: 'kube-system'
+metrics_server_chart_version: '3.12.1'
+
+karpenter_release: 'karpenter'
+karpenter_namespace: 'karpenter'
+karpenter_chart_version: '0.37.0'
+
+aws_lb_controller_release: 'aws-load-balancer'
+aws_lb_controller_namespace: 'kube-system'
+aws_lb_controller_sa: 'alb-ingress-controller-sa'
+aws_lb_controller_chart_version: '1.8.1'
+aws_lb_ingress_class: 'alb'
+
+secret_csi_release: 'csi-secrets-store'
+secret_csi_namespace: 'kube-system'
+secret_csi_sa: 'secrets-csi-sa'
+secret_csi_chart_version: '1.4.4'
+secret_csi_provider_class: 'secret-provider-class-wordpress-credentials'
+
+k8s_dashboard_release: 'kubernetes-dashboard'
+k8s_dashboard_namespace: 'kubernetes-dashboard'
+k8s_dashboard_chart_version: '7.5.0'
+k8s_dashboard_sa: 'dashboard-viewer'
+
+prometheus_stack_chart_version: '61.3.2'
+monitoring_namespace: 'monitoring'
+service_monitor_label: 'prometheus'
+prometheus_release: 'prometheus'
+
+wp_release: 'wordpress'
+wp_namespace: 'wordpress'
+wp_offload_media_sa: 'wp-offload-media-sa'
+wp_chart_version: '23.0.9'
+
+kubecost_release: 'kubecost'
+kubecost_namespace: 'kubecost'
+kubecost_chart_version: '2.2'
+
+metricbeat_release: 'metricbeat'
+metricbeat_namespace: 'metricbeat'
+metricbeat_chart_version: '7.17.3'
+
+defect_dojo_release: 'defect-dojo'
+defect_dojo_namespace: 'defect-dojo'
+defect_dojo_chart_version: '1.6.143'
