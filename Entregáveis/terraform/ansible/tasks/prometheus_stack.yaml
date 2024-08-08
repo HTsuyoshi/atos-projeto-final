@@ -1,0 +1,157 @@
+---
+- name: Add prometheus stack helm repository
+  kubernetes.core.helm_repository:
+    name: prometheus-community
+    repo_url: "{{ prometheus_helm_repository }}"
+
+- name: Install prometheus and grafana helm chart
+  kubernetes.core.helm:
+    name: '{{ prometheus_release }}'
+    chart_ref: 'prometheus-community/kube-prometheus-stack'
+    chart_version: '{{ prometheus_stack_chart_version }}'
+    namespace: '{{ monitoring_namespace }}'
+    values:
+      defaultRules:
+        create: false
+      prometheus:
+        enabled: true
+        ingress:
+          enabled: false
+        service:
+          type: ClusterIP
+        prometheusSpec:
+          logLevel: info
+          serviceMonitorSelector: {}
+          serviceMonitorNamespaceSelector: {}
+          ruleFiles: []
+      grafana:
+        enabled: true
+        datasources:
+        default:
+          enabled: false
+        admin:
+          existingSecret: 'grafana-credentials'
+        ingress:
+          enabled: true
+          hosts: ['grafana.htsuyoshiy.online']
+          pathType: Prefix
+          ingressClassName: '{{ aws_lb_ingress_class }}'
+          annotations:
+            alb.ingress.kubernetes.io/group.name: application
+            alb.ingress.kubernetes.io/scheme: internet-facing
+            alb.ingress.kubernetes.io/certificate-arn: '{{ cert_arn }}'
+            alb.ingress.kubernetes.io/target-type: ip
+            alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=60
+            alb.ingress.kubernetes.io/target-group-attributes: >
+              stickiness.enabled=true,
+              stickiness.type=lb_cookie,
+              stickiness.lb_cookie.duration_seconds=86400
+            alb.ingress.kubernetes.io/ssl-redirect: '443'
+        extraVolumeMounts:
+          - name: secrets-store-inline
+            mountPath: '/mnt/secrets-store'
+            readOnly: true
+        extraVolumes:
+          - name: secrets-store-inline
+            csi:
+              driver: secrets-store.csi.k8s.io
+              readOnly: true
+              volumeAttributes:
+                secretProviderClass: 'secret-provider-class-grafana-credentials'
+        service:
+          type: ClusterIP
+        sidecar:
+          datasource:
+            enabled: true
+            label: 'grafana_datasource'
+            searchNamespace: '{{ monitoring_namespace }}'
+          dashboards:
+            enabled: true
+            label: 'grafana_dashboard'
+            folder: '/var/lib/grafana/dashboards'
+            defaultFolderName: 'dashboard'
+            searchNamespace: '{{ monitoring_namespace }}'
+      alertmanager:
+        enabled: false
+      crds:
+        enabled: true
+      prometheusOperator:
+        enabled: true
+      kubernetesServiceMonitors:
+        enabled: true
+      thanosRuler:
+        enabled: false
+      windowsMonitoring:
+        enabled: false
+      prometheus-windows-exporter:
+        enabled: false
+
+- name: Add Grafana role to ServiceAccount
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: prometheus-grafana
+        namespace: '{{ monitoring_namespace }}'
+        annotations:
+          eks.amazonaws.com/role-arn: '{{ grafana_role_arn }}'
+
+- name: Upgrade karpenter helm chart
+  kubernetes.core.helm:
+    name: '{{ karpenter_release }}'
+    chart_ref: '{{ karpenter_chart_ref }}'
+    chart_version: '{{ karpenter_chart_version }}'
+    namespace: '{{ karpenter_namespace }}'
+    state: present
+    values:
+      logLevel: debug
+      webhook:
+        enabled: true
+      controller:
+        requests:
+          cpu: 1
+          memory: 1Gi
+        limits:
+          cpu: 1
+          memory: 1Gi
+      settings:
+        clusterName: '{{ cluster_name }}'
+        clusterEndpoint: '{{ cluster_endpoint }}'
+      serviceAccount:
+        name: 'karpenter'
+        create: true
+        annotations:
+          eks.amazonaws.com/role-arn: '{{ karpenter_role_arn }}'
+      serviceMonitor:
+        enabled: true
+        namespace: '{{ monitoring_namespace }}'
+        selector:
+          app.kubernetes.io/instance: '{{ karpenter_release }}'
+        labels:
+          release: '{{ service_monitor_label }}'
+          name: '{{ karpenter_release }}'
+
+- name: Add karpenter servicemonitor
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        labels:
+          release: prometheus
+        name: karpenter
+        namespace: monitoring
+      spec:
+        endpoints:
+          - honorLabels: false
+            port: http-metrics
+        namespaceSelector:
+          matchNames:
+            - '{{ karpenter_namespace }}'
+        selector:
+          matchLabels:
+            app.kubernetes.io/instance: karpenter
+            app.kubernetes.io/name: karpenter

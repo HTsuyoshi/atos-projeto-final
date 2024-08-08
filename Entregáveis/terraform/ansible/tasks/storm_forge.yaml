@@ -1,0 +1,19 @@
+---
+- name: Install stormforge helm chart
+  kubernetes.core.helm:
+    name: '{{ stormforge_release }}'
+    chart_ref: '{{ stormforge_chart_ref }}'
+    chart_version: '{{ stormforge_chart_version }}'
+    namespace: '{{ stormforge_namespace }}'
+    create_namespace: true
+    values:
+      clusterName: '{{ cluster_name }}'
+      authorization:
+        clientID: '{{ stormforge_user.stdout }}'
+        clientSecret: '{{ stormforge_password.stdout }}'
+      workload:
+        autoDiscovery: true
+        denyNamespaces:
+        - kube-system
+        - karpetner
+        - openshift.*

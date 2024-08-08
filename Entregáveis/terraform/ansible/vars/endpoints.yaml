@@ -1,0 +1,25 @@
+---
+awscli_endpoint: 'https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip'
+kubectl_endpoint: 'https://s3.us-west-2.amazonaws.com/amazon-eks/1.30.0/2024-05-12/bin/linux/amd64/kubectl'
+helm_version: 'helm-v3.15.2-linux-amd64.tar.gz'
+eksctl_endpoint: 'https://github.com/eksctl-io/eksctl/releases/download/v0.183.0/eksctl_Linux_amd64.tar.gz'
+eksctl_checksum_endpoint: 'https://github.com/eksctl-io/eksctl/releases/download/v0.183.0/eksctl_checksums.txt'
+
+stormforge_chart_ref: 'oci://registry.stormforge.io/library/stormforge-agent'
+kubernetes_metrics_server_helm_repository: 'https://kubernetes-sigs.github.io/metrics-server/'
+karpenter_chart_ref: 'oci://public.ecr.aws/karpenter/karpenter'
+karpenter_ec2nodeclasses_crd: 'https://raw.githubusercontent.com/aws/karpenter-provider-aws/release-v0.37.x/pkg/apis/crds/karpenter.k8s.aws_ec2nodeclasses.yaml'
+karpenter_nodepool_crd: 'https://raw.githubusercontent.com/aws/karpenter-provider-aws/release-v0.37.x/pkg/apis/crds/karpenter.sh_nodepools.yaml'
+karpenter_nodeclaims_crd: 'https://raw.githubusercontent.com/aws/karpenter-provider-aws/release-v0.37.x/pkg/apis/crds/karpenter.sh_nodeclaims.yaml'
+aws_lb_controller_helm_repository: 'https://aws.github.io/eks-charts'
+secret_csi_helm_repository: https://kubernetes-sigs.github.io/secrets-store-csi-driver/charts
+k8s_dashboard_helm_repository: 'https://kubernetes.github.io/dashboard/'
+prometheus_helm_repository: 'https://prometheus-community.github.io/helm-charts'
+wp_chart_ref: 'oci://registry-1.docker.io/bitnamicharts/wordpress'
+kubecost_helm_repository: 'https://kubecost.github.io/cost-analyzer/'
+metricbeat_helm_repository: 'https://helm.elastic.co'
+defect_dojo_helm_repository: 'https://raw.githubusercontent.com/DefectDojo/django-DefectDojo/helm-charts'
+
+grafana_dashboard_3119: 'https://grafana.com/api/dashboards/3119/revisions/2/download'
+grafana_dashboard_13191_wordpress: 'https://grafana.com/api/dashboards/13191/revisions/1/download'
+grafana_dashboard_20398_karpenter: 'https://grafana.com/api/dashboards/20398/revisions/1/download'

@@ -1,0 +1,103 @@
+---
+- name: Add metricbeat helm repository
+  kubernetes.core.helm_repository:
+    name: elastic
+    repo_url: '{{ metricbeat_helm_repository }}'
+
+- name: Install metricbeat helm chart
+  kubernetes.core.helm:
+    name: '{{ metricbeat_release }}'
+    chart_ref: 'elastic/metricbeat'
+    chart_version: '{{ metricbeat_chart_version }}'
+    namespace: '{{ metricbeat_namespace }}'
+    create_namespace: true
+    values:
+      extraEnvs:
+        - name: ELASTICSEARCH_HOSTS
+          value: "elk.htsuyoshiy.online"
+      deployment:
+        enabled: true
+        metricbeatConfig:
+          metricbeat.yml: |
+            metricbeat.modules:
+            - module: kubernetes
+              enabled: true
+              metricsets:
+                - state_node
+                - state_daemonset
+                - state_deployment
+                - state_replicaset
+                - state_statefulset
+                - state_pod
+                - state_container
+                - state_job
+                - state_cronjob
+                - state_resourcequota
+                - state_service
+                - state_persistentvolume
+                - state_persistentvolumeclaim
+                - state_storageclass
+              period: 10s
+              hosts: ["${KUBE_STATE_METRICS_HOSTS}"]
+              add_metadata: true
+            processors:
+              - add_cloud_metadata: {}
+              - add_host_metadata: {}
+              - add_kubernetes_metadata: {}
+              - add_fields:
+                  target: orchestrator
+                  fields:
+                    cluster.name: "kubernetes-henrique"
+            fields:
+              cluster: "kubernetes-henrique"
+            output.logstash:
+              hosts: ["elk.htsuyoshiy.online:5044"]
+            setup:
+              kibana:
+                host: "http://elk.htsuyoshiy.online:5601"
+              #dashboards:
+              #  enabled: true
+      daemonset:
+        enabled: true
+        metricbeatConfig:
+          metricbeat.yml: |
+            metricbeat.modules:
+            - module: kubernetes
+              metricsets:
+                - node
+                - system
+                - pod
+                - container
+                - volume
+              period: 10s
+              host: "${NODE_NAME}"
+              hosts: ["${NODE_NAME}:10250"]
+              add_metadata: true
+              bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+              ssl:
+                enabled: false
+
+            - module: system
+              period: 10s
+              metricsets:
+                - cpu
+                - load
+                - memory
+                - network
+                - process
+                - process_summary
+                - uptime
+                - socket_summary
+              processes: ['.*']
+            processors:
+              - add_cloud_metadata: {}
+              - add_host_metadata: {}
+              - add_kubernetes_metadata: {}
+              - add_fields:
+                  target: orchestrator
+                  fields:
+                    cluster.name: "kubernetes-henrique"
+            fields:
+              cluster: "kubernetes-henrique"
+            output.logstash:
+              hosts: ["elk.htsuyoshiy.online:5044"]

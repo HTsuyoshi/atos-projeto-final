@@ -1,0 +1,253 @@
+---
+- name: Create ALB Ingress Controller Service Account
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        annotations:
+          eks.amazonaws.com/role-arn: '{{ aws_lb_role_arn }}'
+          meta.helm.sh/release-name: '{{ aws_lb_controller_release }}'
+          meta.helm.sh/release-namespace: '{{ aws_lb_controller_namespace }}'
+        labels:
+          app.kubernetes.io/managed-by: 'Helm'
+        name: '{{ aws_lb_controller_sa }}'
+        namespace: '{{ aws_lb_controller_namespace }}'
+
+- name: Add AWS Load Balancer Controller helm repository
+  kubernetes.core.helm_repository:
+    name: aws-load-balancer-controller
+    repo_url: '{{ aws_lb_controller_helm_repository }}'
+
+- name: Install AWS Load Balancer Controller helm chart
+  kubernetes.core.helm:
+    name: '{{ aws_lb_controller_release }}'
+    chart_ref: 'aws-load-balancer-controller/aws-load-balancer-controller'
+    chart_version: '{{ aws_lb_controller_chart_version }}'
+    namespace: '{{ aws_lb_controller_namespace }}'
+    create_namespace: true
+    values:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingRequiredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: eks.amazonaws.com/nodegroup
+                    operator: NotIn
+                    values:
+                      - eks_node_group
+      clusterName: '{{ cluster_name }}'
+      ingressClass: '{{ aws_lb_ingress_class }}'
+      vpcId: '{{ vpc_id }}'
+      region: '{{ region }}'
+      serviceAccount:
+        name: '{{ aws_lb_controller_sa }}'
+
+- name: Add Secrets CSI Driver repository
+  kubernetes.core.helm_repository:
+    name: 'secrets-store-csi-driver'
+    repo_url: '{{ secret_csi_helm_repository }}'
+
+- name: Install Secrets CSI Driver
+  kubernetes.core.helm:
+    name: '{{ secret_csi_release }}'
+    chart_ref: 'secrets-store-csi-driver/secrets-store-csi-driver'
+    chart_version: '{{ secret_csi_chart_version }}'
+    namespace: '{{ secret_csi_namespace }}'
+    values:
+      linux:
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: type
+                      operator: NotIn
+                      values:
+                        - virtual-kubelet
+                        - eks_node_group
+      syncSecret:
+        enabled: true
+      enableSecretRotation: true
+
+- name: Create Secret CSI Service Account
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: '{{ secret_csi_sa }}'
+        namespace: '{{ secret_csi_namespace }}'
+        annotations:
+          eks.amazonaws.com/role-arn: '{{ secret_csi_role_arn }}'
+
+- name: Create Secret CSI ClusterRole
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: '{{ secret_csi_sa }}-cluster-role'
+      rules:
+        - apiGroups: [""]
+          resources: ["pods"]
+          verbs: ["get"]
+        - apiGroups: [""]
+          resources: ["nodes"]
+          verbs: ["get"]
+        - apiGroups: [""]
+          resources: ["serviceaccounts"]
+          verbs: ["get"]
+        - apiGroups: [""]
+          resources: ["serviceaccounts/token"]
+          verbs: ["create"]
+        - apiGroups: [""]
+          resources: ["secrets"]
+          verbs: ["get", "list"]
+        - apiGroups: ["secrets-store.csi.x-k8s.io"]
+          resources: ["secretproviderclasses", "secretproviderclasspodstatuses"]
+          verbs: ["get", "list", "watch", "create", "delete", "update"]
+
+- name: Create Secret CSI ClusterRoleBinding
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: '{{ secret_csi_sa }}-cluster-rolebinding'
+        namespace: 'kube-system'
+      roleRef:
+        kind: ClusterRole
+        name: '{{ secret_csi_sa }}-cluster-role'
+        apiGroup: rbac.authorization.k8s.io
+      subjects:
+        - kind: ServiceAccount
+          name: '{{ secret_csi_sa }}'
+          namespace: '{{ secret_csi_namespace }}'
+
+- name: Create Secret CSI DaemonSet
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        namespace: kube-system
+        name: csi-secrets-store-provider-aws
+        labels:
+          app: csi-secrets-store-provider-aws
+      spec:
+        updateStrategy:
+          type: RollingUpdate
+        selector:
+          matchLabels:
+            app: csi-secrets-store-provider-aws
+        template:
+          metadata:
+            labels:
+              app: csi-secrets-store-provider-aws
+          spec:
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingRequiredDuringExecution:
+                  nodeSelectorTerms:
+                    - matchExpressions:
+                        - key: eks.amazonaws.com/nodegroup
+                          operator: NotIn
+                          values:
+                            - eks_node_group
+            serviceAccountName: '{{ secret_csi_sa }}'
+            hostNetwork: false
+            containers:
+              - name: provider-aws-installer
+                image: public.ecr.aws/aws-secrets-manager/secrets-store-csi-driver-provider-aws:1.0.r2-72-gfb78a36-2024.05.29.23.03
+                imagePullPolicy: Always
+                args:
+                  - --provider-volume=/etc/kubernetes/secrets-store-csi-providers
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 100Mi
+                  limits:
+                    cpu: 50m
+                    memory: 100Mi
+                securityContext:
+                  privileged: false
+                  allowPrivilegeEscalation: false
+                volumeMounts:
+                  - mountPath: '/etc/kubernetes/secrets-store-csi-providers'
+                    name: providervol
+                  - name: mountpoint-dir
+                    mountPath: /var/lib/kubelet/pods
+                    mountPropagation: HostToContainer
+            volumes:
+              - name: providervol
+                hostPath:
+                  path: "/etc/kubernetes/secrets-store-csi-providers"
+              - name: mountpoint-dir
+                hostPath:
+                  path: /var/lib/kubelet/pods
+                  type: DirectoryOrCreate
+            nodeSelector:
+              kubernetes.io/os: linux
+
+- name: Create SecretProviderClass for Wordpress
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: secrets-store.csi.x-k8s.io/v1
+      kind: SecretProviderClass
+      metadata:
+        name: secret-provider-class-wordpress-credentials
+        namespace: wordpress
+      spec:
+        provider: aws
+        parameters:
+          objects: |
+            - objectName: 'rds-wp-credentials'
+              objectType: 'secretsmanager'
+              jmesPath:
+                - path: 'password'
+                  objectAlias: 'wordpress-database-password'
+            - objectName: 'wp-credentials'
+              objectType: 'secretsmanager'
+              jmesPath:
+                - path: 'password'
+                  objectAlias: 'wordpress-admin-password'
+        secretObjects:
+          - secretName: 'rds-wp-credentials'
+            type: Opaque
+            data:
+              - objectName: 'wordpress-database-password'
+                key: 'mariadb-password'
+          - secretName: 'wp-credentials'
+            type: Opaque
+            data:
+              - objectName: 'wordpress-admin-password'
+                key: 'wordpress-password'
+
+- name: Create SecretProviderClass for Grafana
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: secrets-store.csi.x-k8s.io/v1
+      kind: SecretProviderClass
+      metadata:
+        name: secret-provider-class-grafana-credentials
+        namespace: monitoring
+      spec:
+        provider: aws
+        parameters:
+          objects: |
+            - objectName: 'grafana-credentials'
+              objectType: 'secretsmanager'
+              jmesPath:
+                - path: 'username'
+                  objectAlias: 'grafana-admin-user'
+                - path: 'password'
+                  objectAlias: 'grafana-admin-password'
+        secretObjects:
+          - secretName: 'grafana-credentials'
+            type: Opaque
+            data:
+              - objectName: 'grafana-admin-user'
+                key: 'admin-user'
+              - objectName: 'grafana-admin-password'
+                key: 'admin-password'

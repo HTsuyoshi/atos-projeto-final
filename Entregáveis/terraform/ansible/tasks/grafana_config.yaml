@@ -1,0 +1,119 @@
+---
+- name: Wait for wordpress statistics table
+  ansible.builtin.shell:
+    cmd: |
+      mysql -u {{ rds_admin_user.stdout }} -p'{{ rds_admin_password.stdout }}' -h {{ db_host }} \
+      -e 'SELECT table_name FROM information_schema.tables WHERE table_name="wp_statistics_pages"' | grep wp_statistics_pages
+  changed_when: false
+  until: wp_table_output.stdout == 'wp_statistics_pages'
+  retries: 10
+  delay: 15
+  ignore_errors: true
+  register: wp_table_output
+
+- name: Set wp_rds_tables mapping
+  ansible.builtin.set_fact:
+    wp_rds_tables: >
+      {{
+        {
+          db + ".wp_statistics_events": "SELECT",
+          db + ".wp_statistics_exclusions": "SELECT",
+          db + ".wp_statistics_historical": "SELECT",
+          db + ".wp_statistics_pages": "SELECT",
+          db + ".wp_statistics_search": "SELECT",
+          db + ".wp_statistics_useronline": "SELECT",
+          db + ".wp_statistics_visit": "SELECT",
+          db + ".wp_statistics_visitor": "SELECT",
+          db + ".wp_statistics_visitor_relationships": "SELECT"
+        }
+      }}
+
+- name: Create a Grafana MySQL user
+  community.mysql.mysql_user:
+    login_host: '{{ db_host }}'
+    login_user: '{{ rds_admin_user.stdout }}'
+    login_password: '{{ rds_admin_password.stdout }}'
+    name: '{{ rds_grafana_user.stdout }}'
+    password: '{{ rds_grafana_password.stdout }}'
+    host: '{{ item }}'
+    priv: |
+      {{ wp_rds_tables }}
+    column_case_sensitive: false
+    state: present
+  loop: '{{ cluster_cidrs }}'
+
+- name: Apply flush privileges
+  community.mysql.mysql_query:
+    login_host: '{{ db_host }}'
+    login_user: '{{ rds_admin_user.stdout }}'
+    login_password: '{{ rds_admin_password.stdout }}'
+    query: 'FLUSH PRIVILEGES;'
+
+- name: Get K8s dashboard 3119 json
+  ansible.builtin.uri:
+    url: '{{ grafana_dashboard_3119 }}'
+    return_content: true
+  register: grafana_dashboard_3119_json
+
+- name: Get wordpress dashboard 13191 json
+  ansible.builtin.uri:
+    url: '{{ grafana_dashboard_13191_wordpress }}'
+    return_content: true
+  register: grafana_dashboard_13191_wordpress_json
+
+- name: Get dashboard 20398 karpenter json
+  ansible.builtin.uri:
+    url: '{{ grafana_dashboard_20398_karpenter }}'
+    return_content: true
+  register: grafana_dashboard_20398_karpenter_json
+
+- name: Create Dashboard ConfigMap
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: grafana-dashboard
+        namespace: monitoring
+        labels:
+          grafana_dashboard: '1'
+      data:
+        dashboard-3319.json: |
+          {{ grafana_dashboard_3119_json.content|
+          from_json | to_json }}
+        dashboard-13191.json: |
+          {{ grafana_dashboard_13191_wordpress_json.content |
+          replace('${DS_WORDPRESS}', 'Wordpress') |
+          replace('hawarfql_wp588', 'wordpress') |
+          replace('wpl7_', 'wp_') |
+          from_json | to_json }}
+        dashboard-20398.json: |
+          {{ grafana_dashboard_20398_karpenter_json.content |
+          replace('"name": "datasource",', '"name": "DS_PROMETHEUS",') |
+          from_json | to_json }}
+
+- name: Create Datasource ConfigMap
+  kubernetes.core.k8s:
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: grafana-datasource
+        namespace: monitoring
+        labels:
+          grafana_datasource: "1"
+      data:
+        datasources.yaml: |
+          apiVersion: 1
+          datasources:
+          - name: Wordpress
+            type: mysql
+            access: proxy
+            url: '{{ db_host }}'
+            database: '{{ db }}'
+            user: '{{ rds_grafana_user.stdout }}'
+            secureJsonData:
+              password: {{ rds_grafana_password.stdout }}
+            isDefault: false
+            jsonData:
+              sslmode: "disable"

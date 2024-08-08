@@ -1,0 +1,367 @@
+---
+- name: Create a Wordpress MySQL user
+  community.mysql.mysql_user:
+    login_host: '{{ db_host }}'
+    login_user: '{{ rds_admin_user.stdout }}'
+    login_password: '{{ rds_admin_password.stdout }}'
+    name: '{{ rds_wp_user.stdout }}'
+    password: '{{ rds_wp_password.stdout }}'
+    host: '{{ item }}'
+    priv: '{{ db }}.*:ALL'
+    column_case_sensitive: false
+    state: present
+  loop: "{{ cluster_cidrs }}"
+
+- name: Apply flush privileges
+  community.mysql.mysql_query:
+    login_host: '{{ db_host }}'
+    login_user: '{{ rds_admin_user.stdout }}'
+    login_password: '{{ rds_admin_password.stdout }}'
+    query: 'FLUSH PRIVILEGES;'
+
+- name: Install WordPress Helm chart
+  kubernetes.core.helm:
+    name: '{{ wp_release }}'
+    chart_ref: '{{ wp_chart_ref }}'
+    chart_version: '{{ wp_chart_version }}'
+    release_namespace: '{{ wp_namespace }}'
+    values:
+      global:
+        storageClass: '{{ efs_csi_storage_class }}'
+      image:
+        debug: true
+      ingress:
+        enabled: true
+        pathType: Prefix
+        hostname: wordpress.htsuyoshiy.online
+        ingressClassName: '{{ aws_lb_ingress_class }}'
+        annotations:
+          alb.ingress.kubernetes.io/group.name: application
+          alb.ingress.kubernetes.io/scheme: internet-facing
+          alb.ingress.kubernetes.io/certificate-arn: '{{ cert_arn }}'
+          alb.ingress.kubernetes.io/target-type: ip
+          alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=60
+          alb.ingress.kubernetes.io/target-group-attributes: >
+            stickiness.enabled=true,
+            stickiness.type=lb_cookie,
+            stickiness.lb_cookie.duration_seconds=86400
+          alb.ingress.kubernetes.io/ssl-redirect: '443'
+          alb.ingress.kubernetes.io/wafv2-acl-arn: '{{ waf_wacl_arn }}'
+      service:
+        type: ClusterIP
+      allowEmptyPassword: false
+      wordpressUsername: '{{ wp_admin_user.stdout }}'
+      existingSecret: 'wp-credentials'
+      wordpressEmail: 'henrique.yara@atos.net'
+      wordpressFirstName: 'henrique'
+      wordpressLastName: 'yara'
+      wordpressBlogName: 'Wordpress EKS'
+      wordpressSkipInstall: false
+      wordpressPlugins:
+        - amazon-s3-and-cloudfront
+        - wp-statistics
+      wordpressExtraConfigContent: |
+        define( 'AS3CF_SETTINGS', serialize( array(
+          'provider' => 'aws',
+          'use-server-roles' => true,
+          'bucket' => '{{ wp_offload_media_bucket }}',
+          'region' => '{{ region }}',
+          'copy-to-s3' => true,
+          'enable-object-prefix' => true,
+          'object-prefix' => 'wp-content/uploads/',
+          'use-yearmonth-folders' => true,
+          'remove-local-file' => true,
+          'object-versioning' => true,
+          'serve-from-s3' => true,
+          'enable-delivery-domain' => true,
+          'domain' => 'cloudfront',
+          'delivery-domain' => '{{ wp_offload_media_cf }}',
+          'domain-rewrite' => true,
+          'path-rewrite' => true
+        ) ) );
+      extraEnvVars:
+        - name: AWS_ROLE_ARN
+          value: '{{ wp_offload_media_role_arn }}'
+        - name: AWS_WEB_IDENTITY_TOKEN_FILE
+          value: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+      automountServiceAccountToken: false
+      serviceAccount:
+        create: true
+        name: '{{ wp_offload_media_sa }}'
+        automountServiceAccountToken: false
+        annotations:
+          eks.amazonaws.com/role-arn: '{{ wp_offload_media_role_arn }}'
+      persistence:
+        enabled: true
+        storageClass: '{{ efs_csi_storage_class }}'
+        accessModes:
+          - ReadWriteMany
+      autoscaling:
+        enabled: true
+        minReplicas: 2
+        maxReplicas: 4
+        targetCPU: 70
+        targetMemory: 70
+      extraVolumeMounts:
+        - name: secrets-store-inline
+          mountPath: '/mnt/secrets-store'
+          readOnly: true
+      extraVolumes:
+        - name: secrets-store-inline
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: 'secret-provider-class-wordpress-credentials'
+      mariadb:
+        enabled: false
+      externalDatabase:
+        host: '{{ db_host }}'
+        port: '{{ db_port }}'
+        database: '{{ db }}'
+        user: '{{ rds_wp_user.stdout }}'
+        existingSecret: 'rds-wp-credentials'
+      metrics:
+        enabled: true
+        serviceMonitor:
+          enabled: true
+          namespace: '{{ monitoring_namespace }}'
+          selector:
+            app.kubernetes.io/instance: '{{ wp_release }}'
+          labels:
+            release: '{{ service_monitor_label }}'
+
+- name: Get a list of all pods from wordpress
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: '{{ wp_namespace }}'
+  register: wp_pod_list
+
+- name: Wait till the Wordpress pod is created
+  kubernetes.core.k8s_info:
+    kind: Pod
+    name: '{{ wp_pod_list.resources[0].metadata.name }}'
+    namespace: '{{ wp_namespace }}'
+    wait: true
+    wait_condition:
+      status: true
+      type: 'Ready'
+    wait_sleep: 10
+    wait_timeout: 600
+
+- name: Setup Wordpress theme via wpcli
+  ansible.builtin.command: |
+      kubectl exec {{ wp_pod_list.resources[0].metadata.name }} -n {{ wp_namespace }} -c wordpress -- \
+      wp theme install vertice --activate
+  changed_when: false
+
+- name: Get Wordpress posts IDs
+  ansible.builtin.command: |
+      kubectl exec {{ wp_pod_list.resources[0].metadata.name }} -n {{ wp_namespace }} -c wordpress -- \
+      wp post list --post_type=page --format=ids
+  changed_when: false
+  register: wp_rm_pages
+
+- name: Delete Wordpress posts
+  ansible.builtin.command: |
+      kubectl exec {{ wp_pod_list.resources[0].metadata.name }} -n {{ wp_namespace }} -c wordpress -- \
+      wp post delete {{ wp_rm_pages.stdout }}
+  changed_when: false
+
+- name: Setup Wordpress page via wpcli
+  ansible.builtin.command: |
+    kubectl exec {{ wp_pod_list.resources[0].metadata.name }} -n {{ wp_namespace }} -c wordpress -- wp post create \
+      --post_author='henrique yara' \
+      --post_status='Publish' \
+      --post_type='page' \
+      --comment_status='closed' \
+      --post_title='Ingite 2023' \
+      --post_content='<h4>Conquistas durante o projeto Ignite:</h4>
+        <ul>
+                <li>Linux Professional Institute Certificate - 1 (04/08/2023)</li>
+                <li>AWS Cloud Practitioner (07/11/2023)</li>
+                <li>Certified Kubernetes Application Developer (25/01/2024)</li>
+                <li>Hashicorp Certified: Terraform Associate - 003 (06/05/2024)</li>
+                <li>AWS Certified SysOps Administrator (26/04/2024)</li>
+        </ul>
+        <h4>TechSpeedUp:</h4>
+        <ul>
+                <li>Certificações Kubernetes com Cesar Cadoná</li>
+        </ul>'
+  changed_when: false
+
+- name: Setup Wordpress page via wpcli
+  ansible.builtin.command: |
+    kubectl exec {{ wp_pod_list.resources[0].metadata.name }} -n {{ wp_namespace }} -c wordpress -- wp post create \
+      --post_author='henrique yara' \
+      --post_status='Publish' \
+      --post_type='page' \
+      --comment_status='closed' \
+      --post_title='Projeto Final' \
+      --post_content='<!-- wp:heading {"level":4} -->
+        <h4 class="wp-block-heading">Projeto final - Ignite 2023</h4>
+        <!-- /wp:heading -->
+        
+        <!-- wp:paragraph -->
+        <p>Proposta de projeto: WordPress rodando como microservices em Kubernetes, o provisionamento deve ser feito com Terraform e as configurações com Ansible e Helm, a arquitetura e implementação deve ser efetuada com boas práticas de cada provedor, a aplicação deve escalar horizontalmente.</p>
+        <!-- /wp:paragraph -->
+        
+        <!-- wp:paragraph -->
+        <p>Requisitos:</p>
+        <!-- /wp:paragraph -->
+        
+        <!-- wp:list -->
+        <ul class="wp-block-list"><!-- wp:list-item -->
+        <li>Infraestrutura funcionando</li>
+        <!-- /wp:list-item -->
+        
+        <!-- wp:list-item -->
+        <li>Aplicação disponível</li>
+        <!-- /wp:list-item -->
+        
+        <!-- wp:list-item -->
+        <li>Aplicação escalável</li>
+        <!-- /wp:list-item -->
+        
+        <!-- wp:list-item -->
+        <li>Código IaC</li>
+        <!-- /wp:list-item -->
+        
+        <!-- wp:list-item -->
+        <li>Documentação</li>
+        <!-- /wp:list-item --></ul>
+        <!-- /wp:list -->
+        
+        <!-- wp:heading {"level":4} -->
+        <h4 class="wp-block-heading">Apresentação</h4>
+        <!-- /wp:heading -->
+        
+        <!-- wp:paragraph -->
+        <p>Apresentação: <a href="https://atos365-my.sharepoint.com/:p:/g/personal/henrique_yara_atos_net/EU69wkIe5o5FqvT9IZZs6eABguT3pIGHnrAMoYE2rxvXvg?e=dmc6aB" data-type="link" data-id="https://atos365-my.sharepoint.com/:p:/g/personal/henrique_yara_atos_net/EU69wkIe5o5FqvT9IZZs6eABguT3pIGHnrAMoYE2rxvXvg?e=dmc6aB">link</a></p>
+        <!-- /wp:paragraph -->
+        
+        <!-- wp:heading {"level":4} -->
+        <h4 class="wp-block-heading">Infraestrutura:</h4>
+        <!-- /wp:heading -->
+        
+        <!-- wp:list -->
+        <ul class="wp-block-list"><!-- wp:list-item -->
+        <li><a href="https://wordpress.htsuyoshiy.online" data-type="link" data-id="https://wordpress.htsuyoshiy.online">wordpress.htsuyoshiy.online</a></li>
+        <!-- /wp:list-item -->
+        
+        <!-- wp:list-item -->
+        <li><a href="https://grafana.htsuyoshiy.online" data-type="link" data-id="https://grafana.htsuyoshiy.online">grafana.htsuyoshiy.online</a></li>
+        <!-- /wp:list-item -->
+        
+        <!-- wp:list-item -->
+        <li><a href="https://kubernetes.htsuyoshiy.online">kubernetes.htsuyoshiy.online</a></li>
+        <!-- /wp:list-item -->
+        
+        <!-- wp:list-item -->
+        <li><a href="https://kube-ops-view.htsuyoshiy.online">kube-ops-view.htsuyoshiy.online</a></li>
+        <!-- /wp:list-item -->
+        
+        <!-- wp:list-item -->
+        <li><a href="https://kubecost.htsuyoshiy.online">kubecost.htsuyoshiy.online</a></li>
+        <!-- /wp:list-item --></ul>
+        <!-- /wp:list -->
+        
+        <!-- wp:heading {"level":4} -->
+        <h4 class="wp-block-heading">Documentação</h4>
+        <!-- /wp:heading -->
+        
+        <!-- wp:paragraph -->
+        <p>Documentação do projeto: <a href="https://atos365-my.sharepoint.com/:b:/g/personal/henrique_yara_atos_net/ESXcSdHjm5ZKrh3_sOb4XBcBPOjEpiB8SlKVm0qtw15UTw?e=1dED9x" data-type="link" data-id="https://atos365-my.sharepoint.com/:b:/g/personal/henrique_yara_atos_net/ESXcSdHjm5ZKrh3_sOb4XBcBPOjEpiB8SlKVm0qtw15UTw?e=1dED9x">link</a></p>
+        <!-- /wp:paragraph -->
+        
+        <!-- wp:paragraph -->
+        <p>Arquiteturas: <a href="https://atos365-my.sharepoint.com/:f:/g/personal/henrique_yara_atos_net/EhmNyTag4ktKr71I6gSFZtgBPdo2hvO6OPs3xpxCDv_g7Q?e=c3vJrr" data-type="link" data-id="https://atos365-my.sharepoint.com/:f:/g/personal/henrique_yara_atos_net/EhmNyTag4ktKr71I6gSFZtgBPdo2hvO6OPs3xpxCDv_g7Q?e=c3vJrr">link</a></p>
+        <!-- /wp:paragraph -->'
+  changed_when: false
+
+- name: Setup Wordpress page via wpcli
+  ansible.builtin.command: |
+    kubectl exec {{ wp_pod_list.resources[0].metadata.name }} -n {{ wp_namespace }} -c wordpress -- wp post create \
+      --post_author='henrique yara' \
+      --post_status='Publish' \
+      --post_type='page' \
+      --comment_status='closed' \
+      --post_title='Demo' \
+      --post_content='<!-- wp:heading {"level":4} -->
+        <h4 class="wp-block-heading">Lista de PoCs</h4>
+        <!-- /wp:heading -->
+
+        <!-- wp:paragraph -->
+        <p>Integração do Wordpress com o Cloud Front: <a href="http://wordpress.htsuyoshiy.online/wp-login.php">Link</a></p>
+        <!-- /wp:paragraph -->
+
+        <!-- wp:paragraph -->
+        <p>AWS Web Application Firewall WebACL:</p>
+        <!-- /wp:paragraph -->
+
+        <!-- wp:list -->
+        <ul class="wp-block-list"><!-- wp:list-item -->
+        <li>wordpress.htsuyoshiy.online</li>
+        <!-- /wp:list-item -->
+
+        <!-- wp:list-item -->
+        <li>wordpress.htsuyoshiy.online/etc</li>
+        <!-- /wp:list-item --></ul>
+        <!-- /wp:list -->
+
+        <!-- wp:paragraph -->
+        <p>Grafana: <a href="http://grafana.htsuyoshiy.online">Link</a></p>
+        <!-- /wp:paragraph -->
+
+        <!-- wp:paragraph -->
+        <p>Kubernetes Operational View: <a href="http://kube-ops-view.htsuyoshiy.online" data-type="link" data-id="kube-ops-view.htsuyoshiy.online">Link</a></p>
+        <!-- /wp:paragraph -->
+
+        <!-- wp:paragraph -->
+        <p>Kubernetes Dashboard: <a href="http://kubernetes.htsuyoshiy.online" data-type="link" data-id="kubernetes.htsuyoshiy.online">Link</a></p>
+        <!-- /wp:paragraph -->
+
+        <!-- wp:paragraph -->
+        <p>Wordpress Stress test:</p>
+        <!-- /wp:paragraph -->
+
+        <!-- wp:code -->
+        <pre class="wp-block-code"><code>
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: client
+          namespace: kubernetes-dashboard
+        spec:
+          replicas: 7
+          selector:
+            matchLabels:
+              app: client
+          template:
+            metadata:
+              labels:
+                app: client
+            spec:
+              containers:
+                - name: busybox
+                  image: busybox
+                  command: &#91;"sh", "-c"]
+                  args:
+                    - while true; do
+                        wget -qO- http://wordpress.wordpress.svc.cluster.local;
+                      done
+        </code></pre>
+        <!-- /wp:code -->
+
+        <!-- wp:paragraph -->
+        <p>Kubecost: <a href="http://kubecost.htsuyoshiy.online" data-type="link" data-id="kubecost.htsuyoshiy.online">Link</a></p>
+        <!-- /wp:paragraph -->
+
+        <!-- wp:paragraph -->
+        <p>Stormforge: <a href="https://app.stormforge.io/" data-type="link" data-id="app.stormforge.io">Link</a></p>
+        <!-- /wp:paragraph -->
+
+        <!-- wp:paragraph -->
+        <p></p>
+        <!-- /wp:paragraph -->'
+  changed_when: false
