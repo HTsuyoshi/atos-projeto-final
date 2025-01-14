@@ -1,6 +1,6 @@
 # Wordpress EKS
 
-[Documentação](./Planejamento/Documentação/Desafio%20Final%20-%20Henrique.pdf)
+[Documentação](./Planejamento/Desafio%20Final%20-%20Henrique.pdf)
 
 ## Endpoints
 
